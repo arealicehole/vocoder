@@ -1,0 +1,28 @@
+# Vocoder Daemon Configuration
+# This file is optional - daemon uses same defaults as Option A
+
+# Whisper API Settings
+whisper_url: "http://127.0.0.1:8765/v1/transcribe"
+
+# Audio Settings (matching Option A exactly)
+audio:
+  sample_rate: 16000
+  channels: 1
+  gain_db: 15.0  # Critical for DJI MIC MINI
+  
+# Silence Detection (matching Option A)
+silence:
+  start_threshold: 0.5  # seconds of speech to start
+  stop_threshold: 2.0   # seconds of silence to stop
+  amplitude: 0.02       # 2% threshold
+  
+# Recording
+max_duration: 30  # seconds
+
+# Typing Tool Preference (ydotool first for GNOME)
+typing_tools:
+  - ydotool
+  - wtype
+
+# IPC Socket
+socket_path: "/run/user/1000/vocoder.sock"

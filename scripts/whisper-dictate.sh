@@ -90,11 +90,13 @@ transcribe_audio() {
     local response
     
     # Call Whisper API (FastAPI service with GPU acceleration)
+    # Add model=tiny to use tiny model (fastest, good enough for dictation)
     response=$(curl -s -X POST \
         -F "file=@$audio_file" \
         -F "format=json" \
         -F "language=en" \
         -F "diarize=false" \
+        -F "model=tiny" \
         "$WHISPER_URL" 2>/dev/null) || {
             notify-send "Vocoder Error" "Transcription failed"
             play_sound error

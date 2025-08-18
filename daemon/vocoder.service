@@ -1,0 +1,32 @@
+[Unit]
+Description=Vocoder Daemon - Fast voice dictation (Option B)
+Documentation=https://github.com/arealicehole/vocoder
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /home/ice/dev/vocoder/bin/vocoder
+Restart=always
+RestartSec=5
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+Environment="XDG_RUNTIME_DIR=/run/user/%U"
+
+# Ensure Whisper API is accessible
+Environment="WHISPER_URL=http://127.0.0.1:8765/v1/transcribe"
+
+# Security (minimal restrictions for audio/typing access)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+MemoryLimit=500M
+CPUQuota=50%
+
+# Watchdog (optional, daemon supports it)
+WatchdogSec=30
+
+[Install]
+WantedBy=default.target

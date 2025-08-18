@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""
+vocoder - Daemon version of working Option A dictation
+Preserves all fixes: ydotool preference, gain boost, text cleanup
+"""
+
+import asyncio
+import subprocess
+import json
+import os
+import signal
+import socket
+import logging
+import io
+import wave
+import re
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional
+import tempfile
+
+# Try to import required libraries
+try:
+    import numpy as np
+    import sounddevice as sd
+    import httpx
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Install with: pip install numpy sounddevice httpx")
+    exit(1)
+
+# Optional systemd support
+try:
+    from systemd import daemon
+    HAS_SYSTEMD = True
+except ImportError:
+    HAS_SYSTEMD = False
+
+@dataclass
+class Config:
+    """Configuration matching Option A's working parameters"""
+    whisper_url: str = "http://127.0.0.1:8765/v1/transcribe"
+    sample_rate: int = 16000
+    channels: int = 1
+    audio_gain_db: float = 15.0  # Matching Option A's gain +15
+    silence_start: float = 0.5
+    silence_stop: float = 2.0
+    silence_threshold: float = 0.02  # 2% as amplitude
+    max_duration: int = 30
+    typing_tool_preference: tuple = ("ydotool", "wtype")  # ydotool first!
+    socket_path: str = f"/run/user/{os.getuid()}/vocoder.sock"
+    
+    def __post_init__(self):
+        # Convert dB gain to amplitude multiplier
+        self.gain_multiplier = 10 ** (self.audio_gain_db / 20)
+
+class AudioRecorder:
+    """Reimplements Option A's recording logic with gain"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.recording = False
+        self.audio_buffer = []
+        self.silence_counter = 0
+        self.stream = None
+        
+    def audio_callback(self, indata, frames, time, status):
+        """Process audio with gain matching Option A's rec gain +15"""
+        if status:
+            logging.warning(f"Audio status: {status}")
+            
+        if self.recording:
+            # Apply gain (matching Option A's gain +15)
+            audio_data = indata[:, 0] * self.config.gain_multiplier
+            
+            # Clip to prevent overflow
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            
+            # Silence detection (matching Option A)
+            rms = np.sqrt(np.mean(audio_data**2))
+            
+            if rms < self.config.silence_threshold:
+                self.silence_counter += frames / self.config.sample_rate
+            else:
+                self.silence_counter = 0
+                
+            self.audio_buffer.append(audio_data.copy())
+            
+            # Auto-stop on silence (matching Option A's behavior)
+            if self.silence_counter >= self.config.silence_stop:
+                logging.info(f"Stopping due to {self.config.silence_stop}s of silence")
+                self.stop_recording()
+    
+    def start_recording(self):
+        """Start recording with Option A's parameters"""
+        logging.info("Starting recording")
+        self.recording = True
+        self.audio_buffer = []
+        self.silence_counter = 0
+        
+        try:
+            self.stream = sd.InputStream(
+                callback=self.audio_callback,
+                channels=self.config.channels,
+                samplerate=self.config.sample_rate,
+                blocksize=1024,
+                dtype='float32'
+            )
+            self.stream.start()
+            
+            # Play start sound and notify (Option A compatibility)
+            self.play_sound("start")
+            self.notify("Recording... (speak now)", 2000)
+            
+        except Exception as e:
+            logging.error(f"Failed to start recording: {e}")
+            self.recording = False
+            self.play_sound("error")
+            self.notify("Recording failed", 2000)
+    
+    def stop_recording(self):
+        """Stop and return audio matching Option A's format"""
+        logging.info("Stopping recording")
+        self.recording = False
+        
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+            self.stream = None
+        
+        self.play_sound("stop")
+        
+        if self.audio_buffer:
+            return np.concatenate(self.audio_buffer)
+        return None
+    
+    def play_sound(self, sound_type):
+        """Play sounds exactly as Option A does"""
+        sounds = {
+            "start": "/usr/share/sounds/freedesktop/stereo/message.oga",
+            "stop": "/usr/share/sounds/freedesktop/stereo/complete.oga",
+            "error": "/usr/share/sounds/freedesktop/stereo/dialog-error.oga"
+        }
+        
+        sound_file = sounds.get(sound_type)
+        if sound_file and os.path.exists(sound_file):
+            try:
+                subprocess.Popen(
+                    ["paplay", sound_file], 
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except:
+                pass  # Don't fail if sound doesn't play
+    
+    def notify(self, message, timeout=None):
+        """Send notifications like Option A"""
+        try:
+            cmd = ["notify-send", "Vocoder", message]
+            if timeout:
+                cmd.extend(["-t", str(timeout)])
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except:
+            pass  # Don't fail if notify-send isn't available
+
+class WhisperClient:
+    """Maintains warm connection to Whisper API"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(
+                max_keepalive_connections=1,
+                keepalive_expiry=60
+            )
+        )
+    
+    async def transcribe(self, audio_data: np.ndarray) -> Optional[str]:
+        """Transcribe using same API as Option A"""
+        if audio_data is None or len(audio_data) == 0:
+            return None
+            
+        # Convert to WAV format as Option A does
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav:
+            wav.setnchannels(self.config.channels)
+            wav.setsampwidth(2)  # 16-bit
+            wav.setframerate(self.config.sample_rate)
+            # Convert float to int16 as Option A does
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            wav.writeframes(audio_int16.tobytes())
+        
+        wav_buffer.seek(0)
+        
+        # Same API call as Option A
+        files = {'file': ('audio.wav', wav_buffer, 'audio/wav')}
+        data = {
+            'format': 'json',
+            'language': 'en',
+            'diarize': 'false',
+            'model': 'tiny'  # Use tiny model for fastest response
+        }
+        
+        try:
+            response = await self.client.post(
+                self.config.whisper_url,
+                files=files,
+                data=data
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                text = result.get('text', '').strip()
+                
+                if text:
+                    # CRITICAL: Apply Option A's text cleanup
+                    # Remove ALL newlines to prevent Enter key
+                    text = text.replace('\n', ' ').replace('\r', '')
+                    # Remove leading/trailing whitespace
+                    text = re.sub(r'^\s+|\s+$', '', text)
+                    logging.info(f"Transcribed: {len(text)} chars")
+                
+                return text
+            else:
+                logging.error(f"Whisper API error: {response.status_code}")
+                
+        except Exception as e:
+            logging.error(f"Transcription error: {e}")
+            
+        return None
+    
+    async def close(self):
+        """Close the HTTP client"""
+        await self.client.aclose()
+
+class TypingHandler:
+    """Implements Option A's typing logic exactly"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.typing_tool = self.detect_typing_tool()
+        logging.info(f"Using typing tool: {self.typing_tool}")
+    
+    def detect_typing_tool(self):
+        """Use Option A's preference: ydotool first, then wtype"""
+        for tool in self.config.typing_tool_preference:
+            try:
+                result = subprocess.run(
+                    ["which", tool], 
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    return tool
+            except:
+                continue
+        return None
+    
+    async def type_text(self, text: str) -> bool:
+        """Type text using Option A's exact method"""
+        if not self.typing_tool or not text:
+            return False
+        
+        try:
+            if self.typing_tool == "ydotool":
+                # Check if daemon is running (Option A logic)
+                check_daemon = subprocess.run(
+                    ["pgrep", "-x", "ydotoold"],
+                    capture_output=True
+                )
+                if check_daemon.returncode != 0:
+                    # Try to start daemon
+                    subprocess.run(
+                        ["systemctl", "--user", "start", "ydotoold"],
+                        capture_output=True
+                    )
+                    await asyncio.sleep(0.5)
+                
+                # CRITICAL: Use --file - flag as Option A does
+                proc = await asyncio.create_subprocess_exec(
+                    "ydotool", "type", "--file", "-",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                # Send text without newline (echo -n behavior)
+                stdout, stderr = await proc.communicate(text.encode())
+                success = proc.returncode == 0
+                
+                if not success:
+                    logging.error(f"ydotool failed: {stderr.decode()}")
+                return success
+                
+            elif self.typing_tool == "wtype":
+                # Use printf to ensure no trailing newline (Option A method)
+                proc = await asyncio.create_subprocess_exec(
+                    "wtype", "-",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate(text.encode())
+                success = proc.returncode == 0
+                
+                if not success:
+                    logging.error(f"wtype failed: {stderr.decode()}")
+                return success
+                
+        except Exception as e:
+            logging.error(f"Typing error: {e}")
+            
+        return False
+    
+    async def copy_to_clipboard(self, text: str):
+        """Fallback to clipboard exactly as Option A"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "wl-copy",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate(text.encode())
+            
+            # Use Option A's exact notification message
+            subprocess.run([
+                "notify-send", "Vocoder", 
+                "Typing failed - text copied to clipboard! Press Ctrl+V",
+                "-t", "3000"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            return True
+        except Exception as e:
+            logging.error(f"Clipboard fallback failed: {e}")
+            return False
+
+class VocoderDaemon:
+    """Main daemon preserving Option A's workflow"""
+    
+    def __init__(self):
+        self.config = Config()
+        self.recorder = AudioRecorder(self.config)
+        self.whisper = WhisperClient(self.config)
+        self.typer = TypingHandler(self.config)
+        self.running = True
+        self.server = None
+        
+    async def process_dictation(self):
+        """Execute Option A's workflow"""
+        logging.info("Starting dictation process")
+        
+        # Start recording
+        self.recorder.start_recording()
+        
+        # Wait for recording to complete (silence detection or timeout)
+        max_wait = self.config.max_duration
+        waited = 0
+        while self.recorder.recording and waited < max_wait:
+            await asyncio.sleep(0.1)
+            waited += 0.1
+        
+        # Force stop if still recording (timeout)
+        if self.recorder.recording:
+            logging.info("Max duration reached, stopping")
+            self.recorder.stop_recording()
+        
+        # Get audio data
+        audio_data = self.recorder.stop_recording()
+        
+        if audio_data is None or len(audio_data) == 0:
+            subprocess.run([
+                "notify-send", "Vocoder", "No speech detected"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        
+        # Transcribe
+        text = await self.whisper.transcribe(audio_data)
+        
+        if not text:
+            subprocess.run([
+                "notify-send", "Vocoder Error", "No transcription received"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.recorder.play_sound("error")
+            return
+        
+        # Type text (with Option A's fallback logic)
+        if await self.typer.type_text(text):
+            # Success notification as Option A
+            subprocess.run([
+                "notify-send", "Vocoder", 
+                f"Transcribed: {len(text)} chars",
+                "-t", "1000"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # Fallback to clipboard
+            await self.typer.copy_to_clipboard(text)
+    
+    async def handle_command(self, command: str) -> dict:
+        """Process commands from vocoderctl"""
+        logging.info(f"Received command: {command}")
+        
+        if command == "start" or command == "toggle":
+            # Run dictation in background
+            asyncio.create_task(self.process_dictation())
+            return {"status": "started"}
+            
+        elif command == "status":
+            return {
+                "status": "running",
+                "typing_tool": self.typer.typing_tool,
+                "recording": self.recorder.recording
+            }
+            
+        elif command == "stop":
+            if self.recorder.recording:
+                self.recorder.stop_recording()
+            return {"status": "stopped"}
+            
+        elif command == "shutdown":
+            self.running = False
+            return {"status": "shutting down"}
+            
+        else:
+            return {"error": f"Unknown command: {command}"}
+    
+    async def handle_client(self, reader, writer):
+        """Handle vocoderctl connections"""
+        try:
+            data = await reader.read(1024)
+            command = data.decode().strip()
+            
+            result = await self.handle_command(command)
+            
+            response = json.dumps(result).encode()
+            writer.write(response)
+            await writer.drain()
+            
+        except Exception as e:
+            logging.error(f"Client handler error: {e}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    
+    async def run(self):
+        """Main daemon loop"""
+        # Set up logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        logging.info("Starting vocoder daemon")
+        
+        # Notify systemd we're ready (if available)
+        if HAS_SYSTEMD:
+            daemon.notify("READY=1")
+        
+        # Set up IPC socket
+        socket_path = Path(self.config.socket_path)
+        socket_path.unlink(missing_ok=True)
+        
+        # Ensure socket directory exists
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            self.server = await asyncio.start_unix_server(
+                self.handle_client,
+                path=str(socket_path)
+            )
+            
+            # Set permissions
+            os.chmod(str(socket_path), 0o600)
+            
+            logging.info(f"Listening on {socket_path}")
+            
+            async with self.server:
+                await self.server.serve_forever()
+                
+        except KeyboardInterrupt:
+            logging.info("Received interrupt, shutting down")
+        except Exception as e:
+            logging.error(f"Server error: {e}")
+        finally:
+            await self.cleanup()
+    
+    async def cleanup(self):
+        """Clean up resources"""
+        logging.info("Cleaning up")
+        
+        if self.recorder.recording:
+            self.recorder.stop_recording()
+        
+        await self.whisper.close()
+        
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+        
+        # Remove socket file
+        socket_path = Path(self.config.socket_path)
+        socket_path.unlink(missing_ok=True)
+
+async def main():
+    """Entry point"""
+    daemon = VocoderDaemon()
+    
+    # Handle signals for graceful shutdown
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(daemon.cleanup()))
+    
+    await daemon.run()
+
+if __name__ == "__main__":
+    asyncio.run(main())
