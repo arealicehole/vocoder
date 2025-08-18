@@ -1,0 +1,19 @@
+
+---
+
+# 📝 Prompt (Option B — Transition from A)
+
+```text
+We have a working one-shot hotkey dictation script (Option A). 
+Now extend it into Option B:
+
+- Build a persistent daemon called `vocoder` (systemd user service)
+- Provide a CLI client `vocoderctl` that sends commands to vocoder
+- Maintain pipeline: record → transcribe via Whisper → type with wtype
+- Improve latency by keeping Whisper hot
+- Support push-to-talk workflow with start/stop commands
+- Deliverables: 
+  - `bin/vocoder` (daemon)
+  - `bin/vocoderctl` (client)
+  - `daemon/vocoder.service` (systemd unit)
+

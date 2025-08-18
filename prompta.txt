@@ -1,0 +1,16 @@
+
+---
+
+# 📝 Prompt (Option A)
+
+```text
+Build a Linux hotkey-driven dictation script:
+
+- Environment: GNOME on Wayland
+- Flow: Hotkey → sox records → send to local Whisper Tiny API → type text with wtype
+- Requirements: 
+  - Must type directly into focused text box (not clipboard)
+  - Silence-based auto-stop
+  - Works with systemd-activated ydotool or fallback to wtype
+- Deliverables: a single bash script `scripts/whisper-dictate.sh`, plus GNOME gsettings keybinding config
+
