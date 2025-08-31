@@ -7,7 +7,7 @@ After=graphical-session.target
 Type=simple
 # --- Environment (override via your shell/env if desired)
 Environment=PYTHONUNBUFFERED=1
-Environment=WHISPER_API_URL=http://127.0.0.1:8765/v1/transcribe
+Environment=WHISPER_API_URL=http://127.0.0.1:8767/v1/transcribe
 Environment=WHISPER_LANG=en
 Environment=WHISPER_DIARIZE=false
 Environment=WHISPER_NUM_SPEAKERS=2

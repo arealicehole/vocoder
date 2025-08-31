@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # === Configuration ===
-WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8765/v1/transcribe}"
+WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8767/v1/transcribe}"
 TEMP_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 TEMP_WAV="$TEMP_DIR/vocoder-$$.wav"
 MAX_DURATION=30
@@ -137,11 +137,12 @@ type_text() {
         ydotool)
             # Check if daemon is running
             if ! pgrep -x ydotoold &>/dev/null; then
-                systemctl --user start ydotoold 2>/dev/null || true
+                notify-send "Vocoder" "Starting ydotoold..."
+                sudo ydotoold 2>/dev/null &
                 sleep 0.5
             fi
-            # Use --file to avoid shell interpretation and ensure no enter key
-            echo -n "$text" | ydotool type --file -
+            # Use sudo to access the root ydotool socket
+            echo -n "$text" | sudo ydotool type --file -
             ;;
         *)
             notify-send "Vocoder Error" "Unknown typing tool"

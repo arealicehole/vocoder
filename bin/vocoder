@@ -39,7 +39,7 @@ except ImportError:
 @dataclass
 class Config:
     """Configuration matching Option A's working parameters"""
-    whisper_url: str = "http://127.0.0.1:8765/v1/transcribe"
+    whisper_url: str = "http://127.0.0.1:8767/v1/transcribe"
     sample_rate: int = 16000
     channels: int = 1
     audio_gain_db: float = 15.0  # Matching Option A's gain +15
@@ -130,6 +130,12 @@ class AudioRecorder:
         
         self.play_sound("stop")
         
+        if self.audio_buffer:
+            return np.concatenate(self.audio_buffer)
+        return None
+    
+    def get_audio_data(self):
+        """Get recorded audio data without changing recording state"""
         if self.audio_buffer:
             return np.concatenate(self.audio_buffer)
         return None
@@ -278,8 +284,9 @@ class TypingHandler:
                     await asyncio.sleep(0.5)
                 
                 # CRITICAL: Use --file - flag as Option A does
+                # Use sudo since ydotoold is running as root
                 proc = await asyncio.create_subprocess_exec(
-                    "ydotool", "type", "--file", "-",
+                    "sudo", "ydotool", "type", "--file", "-",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
@@ -346,6 +353,41 @@ class VocoderDaemon:
         self.running = True
         self.server = None
         
+    async def process_stopped_recording(self):
+        """Process audio that was already recorded (for toggle mode)"""
+        logging.info("Processing stopped recording")
+        
+        # Get audio data
+        audio_data = self.recorder.get_audio_data()
+        
+        if audio_data is None or len(audio_data) == 0:
+            subprocess.run([
+                "notify-send", "Vocoder", "No speech detected"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        
+        # Transcribe
+        text = await self.whisper.transcribe(audio_data)
+        
+        if not text:
+            subprocess.run([
+                "notify-send", "Vocoder Error", "No transcription received"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.recorder.play_sound("error")
+            return
+        
+        # Type text (with Option A's fallback logic)
+        if await self.typer.type_text(text):
+            # Success notification as Option A
+            subprocess.run([
+                "notify-send", "Vocoder", 
+                f"Transcribed: {len(text)} chars",
+                "-t", "1000"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # Fallback to clipboard
+            await self.typer.copy_to_clipboard(text)
+    
     async def process_dictation(self):
         """Execute Option A's workflow"""
         logging.info("Starting dictation process")
@@ -400,10 +442,23 @@ class VocoderDaemon:
         """Process commands from vocoderctl"""
         logging.info(f"Received command: {command}")
         
-        if command == "start" or command == "toggle":
+        if command == "start":
             # Run dictation in background
             asyncio.create_task(self.process_dictation())
             return {"status": "started"}
+            
+        elif command == "toggle":
+            # Toggle recording on/off
+            if self.recorder.recording:
+                # Stop recording and process
+                self.recorder.stop_recording()
+                # Process any recorded audio
+                asyncio.create_task(self.process_stopped_recording())
+                return {"status": "stopped", "recording": False}
+            else:
+                # Start new recording
+                asyncio.create_task(self.process_dictation())
+                return {"status": "started", "recording": True}
             
         elif command == "status":
             return {

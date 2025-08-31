@@ -15,7 +15,7 @@ Environment="PYTHONUNBUFFERED=1"
 Environment="XDG_RUNTIME_DIR=/run/user/%U"
 
 # Ensure Whisper API is accessible
-Environment="WHISPER_URL=http://127.0.0.1:8765/v1/transcribe"
+Environment="WHISPER_URL=http://127.0.0.1:8767/v1/transcribe"
 
 # Security (minimal restrictions for audio/typing access)
 NoNewPrivileges=true

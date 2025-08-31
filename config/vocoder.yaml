@@ -2,7 +2,7 @@
 # This file is optional - daemon uses same defaults as Option A
 
 # Whisper API Settings
-whisper_url: "http://127.0.0.1:8765/v1/transcribe"
+whisper_url: "http://127.0.0.1:8767/v1/transcribe"
 
 # Audio Settings (matching Option A exactly)
 audio:
