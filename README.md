@@ -1,128 +1,111 @@
-# Vocoder - Voice Dictation System
+# Vocoder
 
-## 🎉 Production Ready!
-
-A hotkey-triggered voice dictation system for Linux with two implementation options:
-
-### Option A - Simple Script (Default)
-- **Status**: Production ready, bound to Super+Space
-- **Response Time**: 1-2 seconds startup
-- **Dependencies**: sox, ydotool, curl
-
-### Option B - Daemon Architecture  
-- **Status**: Fully implemented with toggle support
-- **Response Time**: < 50ms instant response
-- **Features**: Persistent Whisper connection, toggle mode
-- **Dependencies**: PortAudio, Python (numpy, sounddevice, httpx)
+Fast voice dictation for Linux with push-to-talk functionality.
 
 ## Features
 
-- **Hotkey Activation**: Press Super+Space to start dictation
-- **Local Transcription**: Uses Whisper API running on localhost
-- **Direct Typing**: Types text where your cursor is focused
-- **Wayland Support**: Works with ydotool on GNOME/Wayland
-- **Silence Detection**: Auto-stops after 2 seconds of silence
-- **Clipboard Fallback**: Copies to clipboard if typing fails
+- 🎙️ **Push-to-talk voice dictation** - Press Super+Space to dictate
+- ⚡ **Dual-mode operation** - Choose between simple script or instant daemon
+- 🔇 **Smart silence detection** - Automatically stops after 2 seconds of silence  
+- 🖥️ **Wayland native** - Full support via ydotool
+- 📋 **Clipboard fallback** - Copies text if typing fails
+- 🚀 **Sub-50ms response** - In daemon mode
 
 ## Quick Start
 
 ```bash
-# Check system status
-./scripts/check-status.sh
+# One-line install
+curl -sSL https://raw.githubusercontent.com/arealicehole/vocoder/main/install.sh | bash
 
 # Test dictation
 ./scripts/whisper-dictate.sh
 
-# Use hotkey
-Press Super+Space, speak, wait for auto-stop
+# Use hotkey: Press Super+Space and speak
 ```
+
+## Requirements
+
+- Linux with PulseAudio/ALSA
+- Whisper API service on port 8771
+- Python 3.9+
 
 ## Installation
 
-### Prerequisites
-
 ```bash
-# Fedora/RHEL
-sudo dnf install sox ydotool curl jq
-
-# For Option B (daemon)
-sudo dnf install portaudio portaudio-devel
-pip install numpy sounddevice httpx
+git clone https://github.com/arealicehole/vocoder.git
+cd vocoder
+./install.sh
 ```
 
-### Setup Whisper API
-
-Requires a separate Whisper API service running on port 8767.
-See whisper-api documentation for setup.
+See [INSTALL.md](INSTALL.md) for detailed instructions.
 
 ## Usage
 
-### Option A: Simple Script (Current Default)
+1. **Focus any text field** (browser, editor, terminal)
+2. **Press Super+Space**
+3. **Speak clearly**
+4. **Stop speaking** - auto-stops after silence
+5. **Text appears** at cursor
 
-1. **Focus on any text field** (browser, editor, terminal, etc.)
-2. **Press Super + Space**
-3. **Speak when you see the notification** "Recording... (speak now)"
-4. **Stop speaking** - it auto-detects silence after 2 seconds
-5. **Text appears** where your cursor was
+## Documentation
 
-### Option B: Daemon Control
-```bash
-# Switch hotkey to daemon mode
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/ command "python3 /home/ice/dev/vocoder/bin/vocoderctl toggle"
+### User Guides
+- [Quick Start Guide](docs/user-guide/quick-start.md)
+- [Configuration](docs/user-guide/configuration.md)
+- [Troubleshooting](docs/user-guide/troubleshooting.md)
 
-# Manual daemon control
-python3 bin/vocoderctl toggle    # Toggle recording
-python3 bin/vocoderctl start     # Start recording
-python3 bin/vocoderctl stop      # Stop recording
-```
+### Developer Guides
+- [Architecture](docs/developer-guide/architecture.md)
+- [Development](docs/developer-guide/development.md)
+- [systemd Service](docs/developer-guide/systemd-service.md)
 
-### Manual Testing
-
-```bash
-# Test Option A (script)
-./scripts/whisper-dictate.sh
-
-# Test Option B (daemon)
-python3 bin/vocoderctl toggle
-
-# Check system status
-./scripts/check-status.sh
-```
+### Reference
+- [Commands Reference](COMMANDS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## Configuration
 
-- **Whisper Model**: tiny (fast and accurate)
-- **Audio**: 16kHz mono with +15dB gain
-- **Silence Detection**: 2 seconds threshold
-- **API Port**: 8767
-- **Max Recording**: 30 seconds
+Edit `config/vocoder.yaml`:
 
-## File Structure
-
-```
-vocoder/
-├── scripts/
-│   ├── whisper-dictate.sh    # Main dictation script
-│   ├── check-status.sh       # System status check
-│   └── setup-option-b.sh     # Daemon setup
-├── bin/
-│   ├── vocoder               # Python daemon
-│   └── vocoderctl            # Control client
-├── config/
-│   └── vocoder.yaml          # Configuration
-└── daemon/
-    └── vocoder.service       # systemd service
+```yaml
+whisper_url: "http://127.0.0.1:8771/v1/transcribe"
+audio:
+  gain_db: 15.0  # Adjust for your microphone
+silence:
+  stop_threshold: 2.0  # Seconds of silence to stop
 ```
 
+## Operating Modes
 
-## Troubleshooting
+### Option A: Simple Script (Default)
+- Reliable and easy to debug
+- 1-2 second startup time
+- No background processes
 
-- **No dictation**: Check Whisper API: `curl http://127.0.0.1:8767/health`
-- **Text won't type**: Ensure ydotoold is running: `pgrep ydotoold`
-- **No recording**: Test mic: `rec test.wav`
-- **Clipboard fallback**: Text copies to clipboard if typing fails (Ctrl+V to paste)
+### Option B: Daemon Mode
+- Instant response (<50ms)
+- Persistent background service
+- Advanced features
+
+Switch to daemon mode:
+```bash
+systemctl --user enable --now vocoder.service
+```
+
+## Contributing
+
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT
+MIT - See [LICENSE](LICENSE) file.
 
+## Support
+
+- [Report Issues](https://github.com/arealicehole/vocoder/issues)
+- [Discussions](https://github.com/arealicehole/vocoder/discussions)
+
+## Acknowledgments
+
+Built with Whisper API for transcription and ydotool for Wayland compatibility.

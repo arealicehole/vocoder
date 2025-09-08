@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # === Configuration ===
-WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8767/v1/transcribe}"
+WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8771/v1/transcribe}"
 TEMP_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 TEMP_WAV="$TEMP_DIR/vocoder-$$.wav"
 MAX_DURATION=30

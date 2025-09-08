@@ -1,0 +1,33 @@
+[project]
+name = "vocoder"
+version = "1.0.0"
+description = "Fast voice dictation daemon for Linux"
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+license = {text = "MIT"}
+authors = [{name = "arealicehole"}]
+
+dependencies = [
+    "numpy==1.24.4",        # Pinned - last stable for Python 3.9+
+    "sounddevice==0.4.6",   # Pinned - audio recording
+    "httpx==0.24.1",        # Pinned - async HTTP client
+]
+
+[project.optional-dependencies]
+systemd = [
+    "systemd-python==235"   # Optional - systemd integration
+]
+
+[project.scripts]
+vocoder = "bin.vocoder:main"
+vocoderctl = "bin.vocoderctl:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["bin"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.service"]

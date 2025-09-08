@@ -84,7 +84,7 @@ systemctl --user status whisper-api.service
 ### Option A Settings (edit `/home/ice/dev/vocoder/scripts/whisper-dictate.sh`)
 ```bash
 # Line 5: Whisper API URL
-WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8765/v1/transcribe}"
+WHISPER_URL="${WHISPER_URL:-http://127.0.0.1:8771/v1/transcribe}"
 
 # Line 8: Max recording duration
 MAX_DURATION=30
@@ -109,7 +109,7 @@ gain +15  # Boost for DJI MIC MINI
 ### Option B Settings (edit `config/vocoder.yaml`)
 ```yaml
 # Whisper API
-whisper_url: "http://127.0.0.1:8765/v1/transcribe"
+whisper_url: "http://127.0.0.1:8771/v1/transcribe"
 
 # Audio Settings
 audio:
@@ -202,7 +202,7 @@ pactl set-source-volume @DEFAULT_SOURCE@ 100%
 ### Test Recording
 ```bash
 # Test Whisper API
-curl -X POST -F "file=@test.wav" -F "format=json" -F "language=en" -F "model=tiny" http://127.0.0.1:8765/v1/transcribe
+curl -X POST -F "file=@test.wav" -F "format=json" -F "language=en" -F "model=tiny" http://127.0.0.1:8771/v1/transcribe
 
 # Test typing tool
 echo "test" | ydotool type --file -
@@ -292,13 +292,13 @@ sudo ln -sf /home/ice/dev/vocoder/bin/vocoderctl /usr/local/bin/
 
 ### Option A
 ```bash
-WHISPER_URL="http://192.168.1.100:8765/v1/transcribe" ./scripts/whisper-dictate.sh
+WHISPER_URL="http://192.168.1.100:8771/v1/transcribe" ./scripts/whisper-dictate.sh
 XDG_RUNTIME_DIR="/custom/tmp" ./scripts/whisper-dictate.sh
 ```
 
 ### Option B
 ```bash
-WHISPER_URL="http://192.168.1.100:8765/v1/transcribe" python3 bin/vocoder
+WHISPER_URL="http://192.168.1.100:8771/v1/transcribe" python3 bin/vocoder
 PYTHONUNBUFFERED=1 python3 bin/vocoder  # For better logging
 ```
 
