@@ -166,11 +166,41 @@ gsettings get org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/or
 
 ## 🔍 Debugging Commands
 
+### Audio Diagnostics
+```bash
+# Comprehensive audio debugging (recommended first step)
+./scripts/diagnose-audio-issues.py
+
+# Quick audio debug
+./scripts/debug-audio.sh
+
+# Manual tests
+rec test.wav gain +15 silence 1 0.5 2% 1 2.0 2% trim 0 5
+timeout 3s arecord -f cd /tmp/test-alsa.wav
+timeout 3s parec --channels=1 /tmp/test-pulse.wav
+```
+
+### Audio Device Management  
+```bash
+# List audio sources (inputs)
+pactl list sources short
+
+# Set correct default source (NOT monitor)
+pactl set-default-source alsa_input.pci-0000_00_1f.3.analog-stereo
+
+# Check current default
+pactl info | grep "Default Source"
+
+# Open audio mixer
+alsamixer  # Press F6 for sound card, F5 for all controls
+
+# Unmute microphone
+pactl set-source-mute @DEFAULT_SOURCE@ false
+pactl set-source-volume @DEFAULT_SOURCE@ 100%
+```
+
 ### Test Recording
 ```bash
-# Test sox recording
-rec test.wav gain +15 silence 1 0.5 2% 1 2.0 2% trim 0 5
-
 # Test Whisper API
 curl -X POST -F "file=@test.wav" -F "format=json" -F "language=en" -F "model=tiny" http://127.0.0.1:8765/v1/transcribe
 

@@ -38,17 +38,18 @@ except ImportError:
 
 @dataclass
 class Config:
-    """Configuration matching Option A's working parameters"""
-    whisper_url: str = "http://127.0.0.1:8767/v1/transcribe"
+    """Configuration with correct defaults"""
+    whisper_url: str = os.environ.get("WHISPER_URL", "http://127.0.0.1:8771/v1/transcribe")
     sample_rate: int = 16000
     channels: int = 1
-    audio_gain_db: float = 15.0  # Matching Option A's gain +15
+    audio_gain_db: float = 15.0
     silence_start: float = 0.5
     silence_stop: float = 2.0
-    silence_threshold: float = 0.02  # 2% as amplitude
-    max_duration: int = 30
-    typing_tool_preference: tuple = ("ydotool", "wtype")  # ydotool first!
+    silence_threshold: float = 0.01  # Lowered from 0.02
+    max_duration: int = int(os.environ.get("MAX_DURATION", "30"))  # Max recording time
+    typing_tool_preference: tuple = ("ydotool", "wtype")
     socket_path: str = f"/run/user/{os.getuid()}/vocoder.sock"
+    clipboard_mode: bool = os.environ.get("CLIPBOARD_MODE", "").lower() == "true"
     
     def __post_init__(self):
         # Convert dB gain to amplitude multiplier
@@ -76,13 +77,35 @@ class AudioRecorder:
             # Clip to prevent overflow
             audio_data = np.clip(audio_data, -1.0, 1.0)
             
-            # Silence detection (matching Option A)
-            rms = np.sqrt(np.mean(audio_data**2))
-            
-            if rms < self.config.silence_threshold:
-                self.silence_counter += frames / self.config.sample_rate
+            # Silence detection with NaN protection
+            if len(audio_data) > 0:
+                # Calculate RMS with validation
+                squared = audio_data ** 2
+                mean_squared = np.mean(squared)
+                
+                # Protect against NaN/inf
+                if np.isfinite(mean_squared) and mean_squared >= 0:
+                    rms = np.sqrt(mean_squared)
+                else:
+                    logging.warning(f"Invalid audio data: mean_squared={mean_squared}")
+                    rms = 0.0  # Assume silence on error
+                
+                # Debug logging
+                if hasattr(self, '_debug_counter'):
+                    self._debug_counter += 1
+                else:
+                    self._debug_counter = 0
+                
+                if self._debug_counter % 30 == 0:  # Log every ~0.5s
+                    logging.debug(f"Audio RMS: {rms:.4f}, Threshold: {self.config.silence_threshold:.4f}, Silence: {self.silence_counter:.1f}s")
+                
+                if rms < self.config.silence_threshold:
+                    self.silence_counter += frames / self.config.sample_rate
+                else:
+                    self.silence_counter = 0
             else:
-                self.silence_counter = 0
+                logging.warning("Empty audio buffer")
+                self.silence_counter += frames / self.config.sample_rate
                 
             self.audio_buffer.append(audio_data.copy())
             
@@ -92,23 +115,46 @@ class AudioRecorder:
                 self.stop_recording()
     
     def start_recording(self):
-        """Start recording with Option A's parameters"""
+        """Start recording with proper device selection"""
         logging.info("Starting recording")
         self.recording = True
         self.audio_buffer = []
         self.silence_counter = 0
         
         try:
+            # Find proper microphone device (exclude monitors)
+            import sounddevice as sd
+            devices = sd.query_devices()
+            mic_device = None
+            
+            for i, device in enumerate(devices):
+                if (device['max_input_channels'] > 0 and 
+                    'monitor' not in device['name'].lower() and
+                    'loopback' not in device['name'].lower()):
+                    logging.info(f"Found microphone: {device['name']} (device {i})")
+                    mic_device = i
+                    break
+            
+            if mic_device is None:
+                # Fallback to default
+                logging.warning("No microphone found, using default device")
+                mic_device = None
+            
             self.stream = sd.InputStream(
                 callback=self.audio_callback,
                 channels=self.config.channels,
                 samplerate=self.config.sample_rate,
                 blocksize=1024,
-                dtype='float32'
+                dtype='float32',
+                device=mic_device  # Use selected device
             )
             self.stream.start()
             
-            # Play start sound and notify (Option A compatibility)
+            # Verify stream is actually running
+            if not self.stream.active:
+                raise Exception("Stream failed to start")
+            
+            # Play start sound and notify
             self.play_sound("start")
             self.notify("Recording... (speak now)", 2000)
             
@@ -116,7 +162,8 @@ class AudioRecorder:
             logging.error(f"Failed to start recording: {e}")
             self.recording = False
             self.play_sound("error")
-            self.notify("Recording failed", 2000)
+            self.notify(f"Recording failed: {str(e)}", 3000)
+            raise  # Re-raise to make error visible
     
     def stop_recording(self):
         """Stop and return audio matching Option A's format"""
@@ -205,7 +252,7 @@ class WhisperClient:
             'format': 'json',
             'language': 'en',
             'diarize': 'false',
-            'model': 'tiny'  # Use tiny model for fastest response
+            'model': 'small'  # Better accuracy than tiny
         }
         
         try:
@@ -283,20 +330,31 @@ class TypingHandler:
                     )
                     await asyncio.sleep(0.5)
                 
-                # CRITICAL: Use --file - flag as Option A does
-                # Use sudo since ydotoold is running as root
+                # CRITICAL: Use --file - flag WITHOUT sudo
                 proc = await asyncio.create_subprocess_exec(
-                    "sudo", "ydotool", "type", "--file", "-",
+                    "ydotool", "type", "--file", "-",  # No sudo!
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                # Send text without newline (echo -n behavior)
+                # Send text without newline
                 stdout, stderr = await proc.communicate(text.encode())
                 success = proc.returncode == 0
                 
                 if not success:
                     logging.error(f"ydotool failed: {stderr.decode()}")
+                    # Try without --file flag as fallback
+                    proc2 = await asyncio.create_subprocess_exec(
+                        "ydotool", "type", text,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout2, stderr2 = await proc2.communicate()
+                    success = proc2.returncode == 0
+                    
+                    if not success:
+                        logging.error(f"ydotool fallback failed: {stderr2.decode()}")
+                        
                 return success
                 
             elif self.typing_tool == "wtype":
@@ -328,7 +386,13 @@ class TypingHandler:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            await proc.communicate(text.encode())
+            # Add timeout to prevent hanging
+            try:
+                await asyncio.wait_for(proc.communicate(text.encode()), timeout=2.0)
+            except asyncio.TimeoutError:
+                logging.error("wl-copy timed out")
+                proc.kill()
+                return False
             
             # Use Option A's exact notification message
             subprocess.run([
@@ -352,13 +416,18 @@ class VocoderDaemon:
         self.typer = TypingHandler(self.config)
         self.running = True
         self.server = None
+        self.processing = False
         
-    async def process_stopped_recording(self):
-        """Process audio that was already recorded (for toggle mode)"""
-        logging.info("Processing stopped recording")
-        
-        # Get audio data
-        audio_data = self.recorder.get_audio_data()
+    async def _process_audio_with_cleanup(self, audio_data):
+        """Process audio and clean up processing flag"""
+        try:
+            await self._process_audio(audio_data)
+        finally:
+            self.processing = False
+            
+    async def _process_audio(self, audio_data):
+        """Process recorded audio data"""
+        logging.info("Processing audio data")
         
         if audio_data is None or len(audio_data) == 0:
             subprocess.run([
@@ -376,73 +445,71 @@ class VocoderDaemon:
             self.recorder.play_sound("error")
             return
         
-        # Type text (with Option A's fallback logic)
-        if await self.typer.type_text(text):
-            # Success notification as Option A
+        # Type or copy based on mode
+        if self.config.clipboard_mode:
+            # Always copy to clipboard in clipboard mode
+            await self.typer.copy_to_clipboard(text)
             subprocess.run([
                 "notify-send", "Vocoder", 
-                f"Transcribed: {len(text)} chars",
-                "-t", "1000"
+                f"Copied to clipboard: {len(text)} chars",
+                "-t", "2000"
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            # Fallback to clipboard
-            await self.typer.copy_to_clipboard(text)
+            # Type text (with Option A's fallback logic)
+            if await self.typer.type_text(text):
+                # Success notification as Option A
+                subprocess.run([
+                    "notify-send", "Vocoder", 
+                    f"Transcribed: {len(text)} chars",
+                    "-t", "1000"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # Fallback to clipboard
+                await self.typer.copy_to_clipboard(text)
     
     async def process_dictation(self):
-        """Execute Option A's workflow"""
+        """Execute Option A's workflow with auto-stop"""
         logging.info("Starting dictation process")
         
-        # Start recording
-        self.recorder.start_recording()
+        # Set processing flag
+        self.processing = True
         
-        # Wait for recording to complete (silence detection or timeout)
-        max_wait = self.config.max_duration
-        waited = 0
-        while self.recorder.recording and waited < max_wait:
-            await asyncio.sleep(0.1)
-            waited += 0.1
-        
-        # Force stop if still recording (timeout)
-        if self.recorder.recording:
-            logging.info("Max duration reached, stopping")
-            self.recorder.stop_recording()
-        
-        # Get audio data
-        audio_data = self.recorder.stop_recording()
-        
-        if audio_data is None or len(audio_data) == 0:
-            subprocess.run([
-                "notify-send", "Vocoder", "No speech detected"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        
-        # Transcribe
-        text = await self.whisper.transcribe(audio_data)
-        
-        if not text:
-            subprocess.run([
-                "notify-send", "Vocoder Error", "No transcription received"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.recorder.play_sound("error")
-            return
-        
-        # Type text (with Option A's fallback logic)
-        if await self.typer.type_text(text):
-            # Success notification as Option A
-            subprocess.run([
-                "notify-send", "Vocoder", 
-                f"Transcribed: {len(text)} chars",
-                "-t", "1000"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            # Fallback to clipboard
-            await self.typer.copy_to_clipboard(text)
+        try:
+            # Start recording
+            self.recorder.start_recording()
+            
+            # Wait for recording to complete (silence detection or timeout)
+            max_wait = self.config.max_duration
+            waited = 0
+            while self.recorder.recording and waited < max_wait:
+                await asyncio.sleep(0.1)
+                waited += 0.1
+            
+            # Force stop if still recording (timeout)
+            if self.recorder.recording:
+                logging.info("Max duration reached, stopping")
+                audio_data = self.recorder.stop_recording()
+            else:
+                # Already stopped by silence detection
+                audio_data = self.recorder.get_audio_data()
+            
+            # Process the audio
+            await self._process_audio(audio_data)
+            
+        finally:
+            self.processing = False
     
     async def handle_command(self, command: str) -> dict:
         """Process commands from vocoderctl"""
         logging.info(f"Received command: {command}")
         
+        # Add processing flag to prevent overlaps
+        if not hasattr(self, 'processing'):
+            self.processing = False
+        
         if command == "start":
+            if self.processing:
+                return {"status": "busy", "error": "Already processing"}
             # Run dictation in background
             asyncio.create_task(self.process_dictation())
             return {"status": "started"}
@@ -451,20 +518,28 @@ class VocoderDaemon:
             # Toggle recording on/off
             if self.recorder.recording:
                 # Stop recording and process
-                self.recorder.stop_recording()
-                # Process any recorded audio
-                asyncio.create_task(self.process_stopped_recording())
+                logging.info("Stopping recording from toggle")
+                audio_data = self.recorder.stop_recording()
+                
+                # Only process if we're not already processing
+                if not self.processing and audio_data is not None:
+                    self.processing = True
+                    asyncio.create_task(self._process_audio_with_cleanup(audio_data))
                 return {"status": "stopped", "recording": False}
             else:
+                if self.processing:
+                    return {"status": "busy", "error": "Still processing previous recording"}
                 # Start new recording
-                asyncio.create_task(self.process_dictation())
+                logging.info("Starting recording from toggle")
+                self.recorder.start_recording()
                 return {"status": "started", "recording": True}
             
         elif command == "status":
             return {
                 "status": "running",
                 "typing_tool": self.typer.typing_tool,
-                "recording": self.recorder.recording
+                "recording": self.recorder.recording,
+                "processing": getattr(self, 'processing', False)
             }
             
         elif command == "stop":
@@ -501,7 +576,7 @@ class VocoderDaemon:
         """Main daemon loop"""
         # Set up logging
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG if os.environ.get('DEBUG') else logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         
