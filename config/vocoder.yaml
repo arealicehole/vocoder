@@ -6,7 +6,7 @@ whisper_url: "http://127.0.0.1:8771/v1/transcribe"
 
 # Audio Settings (matching Option A exactly)
 audio:
-  sample_rate: 16000
+  sample_rate: 48000
   channels: 1
   gain_db: 15.0  # Critical for DJI MIC MINI
   

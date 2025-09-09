@@ -14,9 +14,10 @@ import logging
 import io
 import wave
 import re
+import yaml
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
 import tempfile
 
 # Try to import required libraries
@@ -26,7 +27,7 @@ try:
     import httpx
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Install with: pip install numpy sounddevice httpx")
+    print("Install with: pip install numpy sounddevice httpx pyyaml")
     exit(1)
 
 # Optional systemd support
@@ -39,21 +40,78 @@ except ImportError:
 @dataclass
 class Config:
     """Configuration with correct defaults"""
-    whisper_url: str = os.environ.get("WHISPER_URL", "http://127.0.0.1:8771/v1/transcribe")
-    sample_rate: int = 16000
+    whisper_url: str = "http://127.0.0.1:8771/v1/transcribe"
+    sample_rate: int = 48000
     channels: int = 1
     audio_gain_db: float = 15.0
     silence_start: float = 0.5
     silence_stop: float = 2.0
     silence_threshold: float = 0.01  # Lowered from 0.02
-    max_duration: int = int(os.environ.get("MAX_DURATION", "30"))  # Max recording time
+    max_duration: int = 30  # Max recording time
     typing_tool_preference: tuple = ("ydotool", "wtype")
-    socket_path: str = f"/run/user/{os.getuid()}/vocoder.sock"
-    clipboard_mode: bool = os.environ.get("CLIPBOARD_MODE", "").lower() == "true"
+    socket_path: str = "/run/user/1000/vocoder.sock"
+    clipboard_mode: bool = False  # Whether to use clipboard instead of typing
     
-    def __post_init__(self):
-        # Convert dB gain to amplitude multiplier
-        self.gain_multiplier = 10 ** (self.audio_gain_db / 20)
+    @classmethod
+    def from_yaml(cls, config_path: Path) -> "Config":
+        """Load configuration from YAML file"""
+        config = cls()
+        
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    yaml_data = yaml.safe_load(f)
+                    
+                if yaml_data:
+                    # Load whisper URL
+                    if 'whisper_url' in yaml_data:
+                        config.whisper_url = yaml_data['whisper_url']
+                    
+                    # Load audio settings
+                    if 'audio' in yaml_data:
+                        audio = yaml_data['audio']
+                        if 'sample_rate' in audio:
+                            config.sample_rate = audio['sample_rate']
+                        if 'channels' in audio:
+                            config.channels = audio['channels']
+                        if 'gain_db' in audio:
+                            config.audio_gain_db = audio['gain_db']
+                    
+                    # Load silence settings
+                    if 'silence' in yaml_data:
+                        silence = yaml_data['silence']
+                        if 'start_threshold' in silence:
+                            config.silence_start = silence['start_threshold']
+                        if 'stop_threshold' in silence:
+                            config.silence_stop = silence['stop_threshold']
+                        if 'amplitude' in silence:
+                            config.silence_threshold = silence['amplitude']
+                    
+                    # Load other settings
+                    if 'max_duration' in yaml_data:
+                        config.max_duration = yaml_data['max_duration']
+                    if 'typing_tools' in yaml_data:
+                        config.typing_tool_preference = tuple(yaml_data['typing_tools'])
+                    if 'socket_path' in yaml_data:
+                        config.socket_path = yaml_data['socket_path']
+                    if 'clipboard_mode' in yaml_data:
+                        config.clipboard_mode = yaml_data['clipboard_mode']
+                        
+                logging.info(f"Loaded config from {config_path}: sample_rate={config.sample_rate}")
+            except Exception as e:
+                logging.warning(f"Failed to load config from {config_path}: {e}, using defaults")
+        else:
+            logging.info(f"Config file {config_path} not found, using defaults")
+            
+        # Override with environment variables if present
+        if "WHISPER_URL" in os.environ:
+            config.whisper_url = os.environ["WHISPER_URL"]
+        if "MAX_DURATION" in os.environ:
+            config.max_duration = int(os.environ["MAX_DURATION"])
+        if "CLIPBOARD_MODE" in os.environ:
+            config.clipboard_mode = os.environ["CLIPBOARD_MODE"].lower() == "true"
+            
+        return config
 
 class AudioRecorder:
     """Reimplements Option A's recording logic with gain"""
@@ -122,31 +180,14 @@ class AudioRecorder:
         self.silence_counter = 0
         
         try:
-            # Find proper microphone device (exclude monitors)
-            import sounddevice as sd
-            devices = sd.query_devices()
-            mic_device = None
-            
-            for i, device in enumerate(devices):
-                if (device['max_input_channels'] > 0 and 
-                    'monitor' not in device['name'].lower() and
-                    'loopback' not in device['name'].lower()):
-                    logging.info(f"Found microphone: {device['name']} (device {i})")
-                    mic_device = i
-                    break
-            
-            if mic_device is None:
-                # Fallback to default
-                logging.warning("No microphone found, using default device")
-                mic_device = None
-            
+            # Use system default audio device
             self.stream = sd.InputStream(
                 callback=self.audio_callback,
                 channels=self.config.channels,
                 samplerate=self.config.sample_rate,
                 blocksize=1024,
                 dtype='float32',
-                device=mic_device  # Use selected device
+                device=None  # Use system default
             )
             self.stream.start()
             
@@ -410,7 +451,13 @@ class VocoderDaemon:
     """Main daemon preserving Option A's workflow"""
     
     def __init__(self):
-        self.config = Config()
+        # Load config from YAML file
+        config_path = Path(__file__).parent.parent / "config" / "vocoder.yaml"
+        self.config = Config.from_yaml(config_path)
+        
+        # Calculate gain multiplier from dB
+        self.config.gain_multiplier = 10 ** (self.config.audio_gain_db / 20)
+        
         self.recorder = AudioRecorder(self.config)
         self.whisper = WhisperClient(self.config)
         self.typer = TypingHandler(self.config)
